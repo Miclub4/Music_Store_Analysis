@@ -1,0 +1,226 @@
+---
+title: 'Project: Music Store'
+author: 'Michał Lubczyński'
+output:
+  pdf_document: default
+---
+
+
+```{r include = FALSE}
+library(DBI)
+library(knitr)
+library(kableExtra)
+
+#Connection
+db <- 'dsqu_musicstore' 
+host_db <- #University database
+db_port <- #Port
+db_user <- rstudioapi::askForPassword("Database user")   
+db_password <- rstudioapi::askForPassword("Database password")
+con <- dbConnect(RPostgres::Postgres(), dbname = db, host=host_db, port=db_port, user=db_user, password=db_password)
+```
+
+
+
+**a) Provide a list of artists along with the number of genres they play. List sorted in descending order by musical genre and ascending by artist name. Additionally, in the third column give the place in dense rank in descending order. Limit results to 20 records.**
+```{sql connection=con, output.var = "a", echo = TRUE, results = "hide"}
+SELECT DISTINCT a.name "Performer_name", 
+        count(DISTINCT g.genreid) "Music_genre_count",
+        DENSE_RANK() over(ORDER BY count(DISTINCT g.genreid) DESC) "Rank"
+FROM artist a
+JOIN album al ON a.artistid = al.artistid 
+JOIN track t ON al.albumid = t.albumid 
+JOIN genre g ON t.genreid = g.genreid
+GROUP BY a.name
+ORDER BY "Music_genre_count" DESC
+LIMIT 20
+```
+```{r echo = FALSE}
+kableExtra::kable(a, booktabs = T, longtable = T) %>%
+  row_spec(0, bold = T) %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+
+
+**b) What kinds of music genres do Canadian customers listen to? Display genre and number of distinct songs in the genre.**
+```{sql connection=con, output.var = "b", echo = TRUE, results = "hide"}
+SELECT DISTINCT g.name "Genre",
+        count(DISTINCT t.trackid) "Song_count"
+FROM genre g 
+JOIN track t ON g.genreid = t.genreid
+JOIN invoiceline i ON t.trackid = i.trackid
+JOIN invoice inv ON i.invoiceid = inv.invoiceid
+WHERE inv.billingcountry = 'Canada'
+GROUP BY "Genre"
+ORDER BY "Song_count" DESC
+```
+```{r echo = FALSE}
+kableExtra::kable(b, booktabs = T, longtable = T) %>%
+  row_spec(0, bold = T) %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+
+
+**c) List the ten customers who spent the most in this store.**
+```{sql connection=con, output.var = "c", echo = TRUE, results = "hide"}
+SELECT  firstname,
+        lastname,
+        sum(total)
+FROM invoice
+JOIN customer ON invoice.customerid = customer.customerid
+GROUP BY invoice.customerid, firstname, lastname
+ORDER BY sum(total) DESC
+LIMIT 10
+```
+```{r echo = FALSE}
+kableExtra::kable(c, booktabs = T, longtable = T) %>%
+  row_spec(0, bold = T) %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+
+
+**d)Give the distribution of the sum of money spent with the breakdown by customer countries as a percentage with an accuracy of one per mille. Sort the result by the largest share.**
+```{sql connection=con, output.var = "d", echo = TRUE, results = "hide"}
+SELECT billingcountry,
+        round(sum(total)*100/(SELECT sum(total) FROM invoice), 1) "%_share"
+FROM invoice
+GROUP BY billingcountry
+ORDER BY sum(total) DESC
+```
+```{r echo = FALSE}
+kableExtra::kable(d, booktabs = T, longtable = T) %>%
+  row_spec(0, bold = T) %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+
+
+**e) Display the percentage (with an accuracy of two decimal places) of the types of music file formats purchased from the entire data set (and separately by genre). What genre of music has nobody bought?**
+```{sql connection=con, output.var = "e", echo = TRUE, results = "hide"}
+WITH cte_counter AS 
+        (SELECT gen.name genre_name,
+                med.name format_name,
+                count(inv.trackid) OVER(PARTITION BY med.name) format_song_count,
+                round((count(inv.trackid) OVER 
+                        (PARTITION BY med.name)*100.0 / 
+                        (SELECT count(trackid) FROM invoiceline)), 2) "%_format",
+                count(inv.trackid) over(PARTITION BY gen.name, med.name) genre_song_count,
+                round((count(inv.trackid) OVER 
+                        (PARTITION BY gen.name, med.name)*100.0 / 
+                        (SELECT count(trackid) FROM invoiceline)), 2) "%_genre"
+        FROM invoiceline AS inv
+        JOIN track t ON inv.trackid = t.trackid
+        JOIN mediatype med ON t.mediatypeid = med.mediatypeid
+        RIGHT JOIN genre gen ON t.genreid = gen.genreid)
+SELECT DISTINCT *
+FROM cte_counter
+ORDER BY format_song_count DESC , genre_song_count DESC
+```
+```{r echo = FALSE}
+kableExtra::kable(e, booktabs = T, longtable = T) %>%
+  row_spec(0, bold = T) %>%
+  kable_styling(latex_options = "hold_position", full_width=T, font_size=9)
+```
+
+
+
+**f) What artist is most often bought by those who also bought Miles Davis' albums (excluding Miles Davis and Various Artists)**
+```{sql connection=con, output.var = "f", echo = TRUE, results = "hide"}
+SELECT art.name,
+        count(*) "song_count"
+FROM artist art
+    JOIN album al ON art.artistid = al.artistid
+    JOIN track tr ON al.albumid = tr.albumid
+    JOIN invoiceline inv ON tr.trackid = inv.trackid
+    JOIN invoice i ON inv.invoiceid = i.invoiceid
+    JOIN customer cus ON i.customerid = cus.customerid
+WHERE cus.customerid IN (SELECT cus.customerid "Miles_fan"
+                            FROM artist art
+                                JOIN album al ON art.artistid = al.artistid
+                                JOIN track tr ON al.albumid = tr.albumid
+                                JOIN invoiceline inv ON tr.trackid = inv.trackid
+                                JOIN invoice i ON inv.invoiceid = i.invoiceid
+                                JOIN customer cus ON i.customerid = cus.customerid
+                            WHERE art.name LIKE 'Miles%')
+                            AND art.name NOT LIKE 'Miles%'
+                            AND art.name NOT LIKE 'Various%'
+GROUP BY art.name
+ORDER BY count(*) DESC
+LIMIT 1
+```
+```{r echo = FALSE}
+kableExtra::kable(f, booktabs = T) %>%
+  row_spec(0, bold = T) %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+\pagebreak
+
+**g) Create a ranking of customer service representatives (supportrepid), where the evaluation criterion is the obtained highest non-zero turnover for a given month. The query should return a table with the name and surname of the employee of the month for each sales month.**
+```{sql connection=con, output.var = "g", echo = TRUE, results = "hide"}
+WITH cte AS 
+        (SELECT EXTRACT(YEAR FROM invoicedate) "Year",
+                EXTRACT(MONTH FROM invoicedate) "Month",
+                supportrepid "Employee_id",
+                employee.firstname "Employee_firstname",
+                employee.lastname "Employee_lastname",
+                sum(total) "Sale_sum",
+                rank() OVER(PARTITION BY EXTRACT(YEAR FROM invoicedate),
+                                            EXTRACT(MONTH FROM invoicedate)
+                                            ORDER BY sum(total) DESC) "Emp_Rank"
+            FROM invoice 
+                JOIN customer ON invoice.customerid = customer.customerid
+                JOIN employee ON customer.supportrepid = employee.employeeid
+            GROUP BY "Year", "Month", "Employee_id", 
+                      "Employee_firstname", "Employee_lastname"
+            ORDER BY "Year", "Month", "Sale_sum" DESC)         
+SELECT "Year",
+        "Month",
+        "Employee_id",
+        "Employee_firstname",
+        "Employee_lastname",
+        max("Sale_sum")
+FROM cte
+WHERE "Emp_Rank" = 1
+GROUP BY "Year", "Month", "Employee_id", 
+          "Employee_firstname", "Employee_lastname"
+ORDER BY "Year", "Month"
+```
+```{r echo = FALSE}
+kableExtra::kable(g, booktabs = T, longtable = T) %>%
+  row_spec(0, bold = T) %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+
+
+**h) For each of the three employees (supportrepid), indicate the months for which they recorded zero sales.**
+```{sql connection=con, output.var = "h", echo = TRUE, results = "hide"}
+WITH cte AS 
+        (SELECT cus.supportrepid "employee",
+                EXTRACT (YEAR FROM inv.invoicedate) "year",
+                EXTRACT (MONTH FROM inv.invoicedate) "month"
+        FROM customer cus
+            JOIN invoice inv ON cus.customerid = inv.customerid
+        ORDER BY "employee", "year", "month")
+SELECT sub1.employee,
+        sub1.year,
+        CASE WHEN sub1.month = 12 THEN 1
+                ELSE sub1.month+1 END AS "month"
+FROM (SELECT "employee",
+                "year",
+                "month",
+                lead("month") OVER (ORDER BY "employee") "lead1"
+        FROM cte) "sub1"
+WHERE sub1.lead1 - sub1.month > 1 OR sub1.lead1 - sub1.month = -10
+GROUP BY sub1.employee, sub1.year, sub1.month, sub1.lead1
+ORDER BY sub1.employee, sub1.year, sub1.month
+```
+```{r echo = FALSE}
+kableExtra::kable(h, booktabs = T) %>%
+  row_spec(0, bold = T) %>%
+  kable_styling(latex_options = "hold_position")
+```
